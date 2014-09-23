@@ -49,7 +49,7 @@ module Searchable
 
     def or_chain(*args)
       # check if it is a list of methods or a list of variables
-      create_chain(chain_args(args), :or)
+      create_chain(chain_args(args))
     end
 
     def chain_args(args = [])
@@ -61,10 +61,10 @@ module Searchable
     end
 
     def arel_args(args = [])
-      Array.wrap(args).map{|arg| prepare_or(arg)}
+      Array.wrap(args).map(&:prep_or)
     end
 
-    def create_chain(arelized_args = [], method)
+    def create_chain(arelized_args = [], method = :or)
       chain, arelized_args = remove_first(arelized_args)
       arelized_args.each do |arg|
         chain = chain.send(method, arg)
@@ -75,23 +75,51 @@ module Searchable
     def remove_first(args)
       [args.first, args[1..-1]]
     end
+  end
+end
 
-    def prepare_or(object = nil)
-      to_prepare = object.presence || self
-      if to_prepare.is_a?(ActiveRecord::Relation)
-        to_prepare.constraints.first
-      elsif to_prepare.is_a?(Arel::Nodes::And)
-        to_prepare
-      else
-        name = to_prepare.respond_to?(name) ? to_prepare.name : to_prepare.class.name
-        raise "#{name} is not a Relation object"
-      end
+class ActiveRecord::Relation
+  def active_or(or_arg)
+    arel_self = self.prep_or
+    if or_arg.is_a?(ActiveRecord::Relation)
+      arel_self.or(or_arg.prep_or)
+    elsif or_arg.is_a?(Arel::Nodes::Node)
+      arel_self.or(or_arg)
+    else
+      raise "argument must be an ActiveRecord::Relation or Arel::Nodes::Node"
     end
+  end
+  def method_missing(meth, *args, &block)
+    if meth == :or && args.size == 1
+      active_or(args.first)
+    else
+      super(meth, *args, &block)
+    end
+  end
 
-    def or(relation)
-      arel_self = self.prepare_or
-      arelized_relation = prepare_or(relation)
-      arel_self.or(arelized_relation)
+  def prep_or
+    constraints.first
+  end
+end
+
+module Arel
+  module Nodes
+    class Node
+      def or(right)
+        if right.is_a?(ActiveRecord::Relation)
+          active_or(right)
+        else
+          Nodes::Grouping.new Nodes::Or.new(self, right)
+        end
+      end
+
+      def active_or(right)
+        if right.is_a?(ActiveRecord::Relation)
+          self.or(right.constraints.first)
+        else
+          self.or(right)
+        end
+      end
     end
   end
 end
